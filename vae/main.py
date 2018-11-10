@@ -8,42 +8,20 @@ import tensorflow.contrib.eager as tfe
 import tensorflow_probability as tfp
 
 from tqdm import trange
+
+from vae import losses
+from vae.data import prep_images, get_dataset
 from vae.model import Model
 
 
 @attr.s
 class Params:
+    """
+    Container for hyperparameters.
+    """
     learning_rate = attr.ib(default=1e-3)
     epochs = attr.ib(default=10)
     batch_size = attr.ib(default=1024)
-
-
-def prep_images(images):
-    return np.round(images[..., None].astype(np.float32) / 255)
-
-
-def get_dataset(tensors, batch_size=None, shuffle=False, buffer_size=10000):
-    if batch_size is not None:
-        dataset = tf.data.Dataset.from_tensor_slices(tensors)
-        if shuffle:
-            dataset = dataset.shuffle(buffer_size)
-        dataset = dataset.batch(batch_size)
-        dataset = dataset.prefetch(tf.contrib.data.AUTOTUNE)
-    else:
-        dataset = tf.data.Dataset.from_tensors(tensors)
-    return dataset
-
-
-def variational_loss(outputs_dist, z_dist, targets):
-    latent_prior = tfp.distributions.MultivariateNormalDiag(
-        loc=tf.zeros_like(z_dist.loc), scale_identity_multiplier=1.0)
-
-    log_prob = outputs_dist.log_prob(targets)
-    kl = tfp.distributions.kl_divergence(z_dist, latent_prior)
-    elbo = tf.reduce_mean(log_prob - kl)
-    loss = -elbo
-
-    return loss
 
 
 def main():
@@ -53,35 +31,48 @@ def main():
     args = parser.parse_args()
     print('args:', args)
 
+    # create a job directory if it doesn't already exist
     if not os.path.exists(args.job_dir):
         os.makedirs(args.job_dir)
 
+    # enable eager execution
     tf.enable_eager_execution()
 
+    # set random seeds for consistent execution
     random.seed(args.seed)
     np.random.seed(args.seed)
     tf.set_random_seed(args.seed)
 
+    # define hyperparameters
     params = Params()
     print('params:', params)
 
-    # data
+    # load MNIST dataset
     (images_train, _), (images_test, _) = tf.keras.datasets.mnist.load_data()
+
+    # prepare the images by casting and rescaling
     images_train = prep_images(images_train)
     images_test = prep_images(images_test)
 
+    # compute statistics from the training set
     images_loc = images_train.mean()
     images_scale = images_train.std()
 
-    # dataset
+    # define datasets for sampling batches
     dataset_train = get_dataset(
         images_train, batch_size=params.batch_size, shuffle=True)
-    dataset_eval = get_dataset(images_test, batch_size=params.batch_size)
+    dataset_test = get_dataset(images_test, batch_size=params.batch_size)
 
     # model / optimization
     global_step = tf.train.get_or_create_global_step()
     optimizer = tf.train.AdamOptimizer(learning_rate=params.learning_rate)
-    model = Model(inputs_loc=images_loc, inputs_scale=images_scale)
+    model = Model(
+        inputs_loc=images_loc,
+        inputs_scale=images_scale,
+        inputs_shape=[28, 28, 1])
+    latent_prior = tfp.distributions.MultivariateNormalDiag(
+        loc=tf.zeros(shape=[8], dtype=tf.float32),
+        scale_identity_multiplier=1.0)
 
     # checkpoints
     checkpoint = tf.train.Checkpoint(
@@ -100,13 +91,10 @@ def main():
             loss_train = tfe.metrics.Mean(name='loss/train')
             for images in dataset_train:
                 with tf.GradientTape() as tape:
-                    outputs_dist, outputs, z_dist, z = model(
-                        images, training=True)
-                    loss = variational_loss(outputs_dist, z_dist, images)
+                    outputs_dist, z_dist, z = model(images, training=True)
+                    loss = losses.variational(outputs_dist, z_dist, images,
+                                              latent_prior)
                     loss_train(loss)
-
-                # import ipdb
-                # ipdb.set_trace()
 
                 grads = tape.gradient(loss, model.trainable_variables)
                 grads_and_vars = zip(grads, model.trainable_variables)
@@ -126,18 +114,19 @@ def main():
                     step=global_step)
                 tf.contrib.summary.image(
                     name='outputs/train',
-                    tensor=outputs,
+                    tensor=outputs_dist.mean(),
                     max_images=2,
                     step=global_step)
 
-            loss_eval = tfe.metrics.Mean(name='loss/eval')
-            for images in dataset_eval:
-                outputs_dist, outputs, z_dist, z = model(images)
-                loss = variational_loss(outputs_dist, z_dist, images)
-                loss_eval(loss)
+            loss_test = tfe.metrics.Mean(name='loss/eval')
+            for images in dataset_test:
+                outputs_dist, z_dist, z = model(images)
+                loss = losses.variational(outputs_dist, z_dist, images,
+                                          latent_prior)
+                loss_test(loss)
 
             with tf.contrib.summary.always_record_summaries():
-                loss_eval.result()
+                loss_test.result()
 
                 tf.contrib.summary.image(
                     name='image/eval',
@@ -146,13 +135,13 @@ def main():
                     step=global_step)
                 tf.contrib.summary.image(
                     name='outputs/eval',
-                    tensor=outputs,
+                    tensor=outputs_dist.mean(),
                     max_images=2,
                     step=global_step)
 
             pbar.set_description('loss (train): {}, loss (eval): {}'.format(
                 loss_train.result().numpy(),
-                loss_eval.result().numpy()))
+                loss_test.result().numpy()))
 
             checkpoint_prefix = os.path.join(args.job_dir, 'ckpt')
             checkpoint.save(checkpoint_prefix)
