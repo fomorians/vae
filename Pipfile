@@ -11,6 +11,9 @@ tfp-nightly = "*"
 
 [dev-packages]
 ipdb = "*"
+jupyterlab = "*"
+matplotlib = "*"
+seaborn = "*"
 
 [requires]
 python_version = "3.6.5"

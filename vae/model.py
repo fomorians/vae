@@ -44,9 +44,9 @@ class Model(tf.keras.Model):
             units=64, activation=math.swish, kernel_initializer=he_init2)
 
         self.encoder3_loc = tf.keras.layers.Dense(
-            units=8, activation=None, kernel_initializer=he_init1)
+            units=2, activation=None, kernel_initializer=he_init1)
         self.encoder3_scale = tf.keras.layers.Dense(
-            units=8, activation=tf.nn.softplus, kernel_initializer=he_init1)
+            units=2, activation=tf.nn.softplus, kernel_initializer=he_init1)
 
         # define decoder layers
         self.decoder1 = tf.keras.layers.Dense(
@@ -60,24 +60,21 @@ class Model(tf.keras.Model):
             activation=None,
             kernel_initializer=he_init1)
 
-    def call(self, inputs, training=False):
-        # pre-process inputs
+    def encode(self, inputs, cond):
+        cond_hot = tf.one_hot(cond, 10)
         inputs_norm = self.normalizer(inputs)
         inputs_flat = self.flatten(inputs_norm)
-
-        # run encoder
-        encoder1 = self.encoder1(inputs_flat)
+        encoder1 = self.encoder1(tf.concat([inputs_flat, cond_hot], axis=-1))
         encoder2 = self.encoder2(encoder1)
         z_loc = self.encoder3_loc(encoder2)
         z_scale = self.encoder3_scale(encoder2)
         z_dist = tfp.distributions.MultivariateNormalDiag(
             loc=z_loc, scale_diag=z_scale)
+        return z_dist
 
-        # sample latent variable
-        z = z_dist.sample()
-
-        # run decoder
-        decoder1 = self.decoder1(z)
+    def decode(self, z, cond):
+        cond_hot = tf.one_hot(cond, 10)
+        decoder1 = self.decoder1(tf.concat([z, cond_hot], axis=-1))
         decoder2 = self.decoder2(decoder1)
         outputs = self.outputs(decoder2)
         logits = tf.reshape(outputs, [-1] + list(self.inputs_shape))
@@ -87,4 +84,10 @@ class Model(tf.keras.Model):
         outputs_dist = tfp.distributions.Independent(
             tfp.distributions.Bernoulli(logits=logits, dtype=tf.float32),
             reinterpreted_batch_ndims=3)
+        return outputs_dist
+
+    def call(self, inputs, cond, training=False):
+        z_dist = self.encode(inputs, cond)
+        z = z_dist.sample()
+        outputs_dist = self.decode(z, cond)
         return outputs_dist, z_dist, z

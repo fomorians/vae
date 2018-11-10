@@ -20,7 +20,7 @@ class Params:
     Container for hyperparameters.
     """
     learning_rate = attr.ib(default=1e-3)
-    epochs = attr.ib(default=10)
+    epochs = attr.ib(default=100)
     batch_size = attr.ib(default=1024)
 
 
@@ -48,7 +48,8 @@ def main():
     print('params:', params)
 
     # load MNIST dataset
-    (images_train, _), (images_test, _) = tf.keras.datasets.mnist.load_data()
+    ((images_train, labels_train),
+     (images_test, labels_test)) = tf.keras.datasets.mnist.load_data()
 
     # prepare the images by casting and rescaling
     images_train = prep_images(images_train)
@@ -60,8 +61,11 @@ def main():
 
     # define datasets for sampling batches
     dataset_train = get_dataset(
-        images_train, batch_size=params.batch_size, shuffle=True)
-    dataset_test = get_dataset(images_test, batch_size=params.batch_size)
+        (images_train, labels_train),
+        batch_size=params.batch_size,
+        shuffle=True)
+    dataset_test = get_dataset(
+        (images_test, labels_test), batch_size=params.batch_size)
 
     # model / optimization
     global_step = tf.train.get_or_create_global_step()
@@ -71,7 +75,7 @@ def main():
         inputs_scale=images_scale,
         inputs_shape=[28, 28, 1])
     latent_prior = tfp.distributions.MultivariateNormalDiag(
-        loc=tf.zeros(shape=[8], dtype=tf.float32),
+        loc=tf.zeros(shape=[2], dtype=tf.float32),
         scale_identity_multiplier=1.0)
 
     # checkpoints
@@ -89,9 +93,10 @@ def main():
     with trange(params.epochs) as pbar:
         for epoch in pbar:
             loss_train = tfe.metrics.Mean(name='loss/train')
-            for images in dataset_train:
+            for images, labels in dataset_train:
                 with tf.GradientTape() as tape:
-                    outputs_dist, z_dist, z = model(images, training=True)
+                    outputs_dist, z_dist, z = model(
+                        images, labels, training=True)
                     loss = losses.variational(outputs_dist, z_dist, images,
                                               latent_prior)
                     loss_train(loss)
@@ -110,17 +115,17 @@ def main():
                 tf.contrib.summary.image(
                     name='image/train',
                     tensor=images,
-                    max_images=2,
+                    max_images=1,
                     step=global_step)
                 tf.contrib.summary.image(
                     name='outputs/train',
                     tensor=outputs_dist.mean(),
-                    max_images=2,
+                    max_images=1,
                     step=global_step)
 
             loss_test = tfe.metrics.Mean(name='loss/eval')
-            for images in dataset_test:
-                outputs_dist, z_dist, z = model(images)
+            for images, labels in dataset_test:
+                outputs_dist, z_dist, z = model(images, labels)
                 loss = losses.variational(outputs_dist, z_dist, images,
                                           latent_prior)
                 loss_test(loss)
@@ -131,12 +136,12 @@ def main():
                 tf.contrib.summary.image(
                     name='image/eval',
                     tensor=images,
-                    max_images=2,
+                    max_images=1,
                     step=global_step)
                 tf.contrib.summary.image(
                     name='outputs/eval',
                     tensor=outputs_dist.mean(),
-                    max_images=2,
+                    max_images=1,
                     step=global_step)
 
             pbar.set_description('loss (train): {}, loss (eval): {}'.format(
