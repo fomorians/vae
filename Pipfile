@@ -4,15 +4,13 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
-matplotlib = "*"
-seaborn = "*"
 attrs = "*"
 tqdm = "*"
-ipdb = "*"
 tensorflow = "*"
 tfp-nightly = "*"
 
 [dev-packages]
+ipdb = "*"
 
 [requires]
 python_version = "3.6.5"
